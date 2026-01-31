@@ -1,3 +1,28 @@
+
+---
+
+**Thank You!**
+
+We thank all contributors, maintainers, and users for supporting the QS-UV-K1 Custom Firmware and its integration with CMSIS. Your collaboration and feedback are invaluable.
+
+---
+
+**Firmware Binary Naming Convention**
+
+**n7six.dx1arm-k1.v7.6.2br3.bin**
+
+- **n7six** – Maintainer/Repository Owner
+- **dx1arm-k1** – Firmware Edition for UV-K1
+- **v.7.6** – Constant Branding
+- **2** – Last working version/Final Firmware
+- **b** – Beta
+- **r** – Beta Revision
+- **3** – Number of Beta revisions
+
+Refer to this filename when flashing or distributing the firmware. For more details, see the main documentation files in the root directory.
+
+---
+
 # CMSIS Version 5
 
 [![Version](https://img.shields.io/github/v/release/arm-software/CMSIS_5)](https://github.com/ARM-software/CMSIS_5/releases/latest) [![License](https://img.shields.io/github/license/arm-software/CMSIS_5)](https://arm-software.github.io/CMSIS_5/General/html/LICENSE.txt)

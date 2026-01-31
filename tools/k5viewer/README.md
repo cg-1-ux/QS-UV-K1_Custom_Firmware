@@ -1,3 +1,28 @@
+
+---
+
+**Thank You!**
+
+We thank all contributors, maintainers, and users for supporting the QS-UV-K1 Custom Firmware and K5Viewer. Your collaboration and feedback are invaluable.
+
+---
+
+**Firmware Binary Naming Convention**
+
+**n7six.dx1arm-k1.v7.6.2br3.bin**
+
+- **n7six** – Maintainer/Repository Owner
+- **dx1arm-k1** – Firmware Edition for UV-K1
+- **v.7.6** – Constant Branding
+- **2** – Last working version/Final Firmware
+- **b** – Beta
+- **r** – Beta Revision
+- **3** – Number of Beta revisions
+
+Refer to this filename when flashing or distributing the firmware. For more details, see the main documentation files in the root directory.
+
+---
+
 # Quansheng K5Viewer
 
 K5Viewer is a lightweight viewer that displays the live screen output of the Quansheng K5 transceiver (running N7SIX firmware), transmitted via UART to your computer through a Baofeng/Kenwood-style USB-to-Serial cable.

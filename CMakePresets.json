@@ -70,7 +70,7 @@
                 "ENABLE_NAVIG_LEFT_RIGHT": true,
                 "ENABLE_SWD": false,
                 "VERSION_STRING_1": "v0.22",
-                "VERSION_STRING_2": "v7.6.2br2"
+                "VERSION_STRING_2": "v7.6.2br3"
             }
         },
         {
@@ -189,7 +189,7 @@
                 "ENABLE_FEAT_N7SIX_RESCUE_OPS": true,
                 "ENABLE_SWD": true,
                 "EDITION_STRING": "DX1ARM",
-                "TARGET": "n7six.dx1arm-k1.v7.6.2br2"
+                "TARGET": "n7six.dx1arm-k1.v7.6.2br3"
             }
         }
     ],

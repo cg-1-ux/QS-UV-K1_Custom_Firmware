@@ -645,6 +645,8 @@ bool IsCenterMode() { return settings.scanStepIndex < S_STEP_2_5kHz; }
 // scan step in 0.01khz
 uint16_t GetScanStep() { return scanStepValues[settings.scanStepIndex]; }
 
+
+#define SPECTRUM_MAX_SAFE_STEPS 256U
 uint16_t GetStepsCount()
 {
 #ifdef ENABLE_SCAN_RANGES
@@ -652,7 +654,12 @@ uint16_t GetStepsCount()
     {
         uint32_t range = gScanRangeStop - gScanRangeStart;
         uint16_t step = GetScanStep();
-        return (range / step) + 1;  // +1 to include up limit
+        uint16_t steps = (range / step) + 1;  // +1 to include up limit
+        if (steps > SPECTRUM_MAX_SAFE_STEPS) {
+            // Optionally: set a flag to display a warning to the user
+            steps = SPECTRUM_MAX_SAFE_STEPS;
+        }
+        return steps;
     }
 #endif
     return 128 >> settings.stepsCount;
@@ -2552,8 +2559,19 @@ void APP_RunSpectrum(void)
 
     isInitialized = true;
 
+    // Watchdog for preventKeypress stuck condition
+    uint32_t preventKeypressTimeout = 0;
     while (isInitialized)
     {
         Tick();
+        if (preventKeypress) {
+            preventKeypressTimeout++;
+            if (preventKeypressTimeout > 100000) { // ~100k cycles, adjust as needed
+                preventKeypress = false;
+                // Optionally: display warning to user here
+            }
+        } else {
+            preventKeypressTimeout = 0;
+        }
     }
 }

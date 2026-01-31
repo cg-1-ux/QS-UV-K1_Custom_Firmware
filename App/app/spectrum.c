@@ -1447,25 +1447,12 @@ static void UpdateWaterfall(void)
  */
 static void DrawWaterfall(void)
 {
-    // Professional grayscale pattern table for dithering
-    // Maps 16 levels to optimal pixel patterns for visual continuity
-    static const uint8_t ditherPatterns[16] = {
-        0b00000000,  // Level 0: Empty
-        0b00010000,  // Level 1: 12.5% density
-        0b00010001,  // Level 2: 25% density
-        0b00010101,  // Level 3: 37.5% density
-        0b01010101,  // Level 4: 50% density
-        0b01010111,  // Level 5: 62.5% density
-        0b01110111,  // Level 6: 75% density
-        0b01111111,  // Level 7: 87.5% density
-        0b11111111,  // Level 8: 100% density (full signal)
-        0b11111111,  // Level 9-15: Full intensity
-        0b11111111,
-        0b11111111,
-        0b11111111,
-        0b11111111,
-        0b11111111,
-        0b11111111
+    // 4x4 Bayer matrix for ordered dithering (values 0-15)
+    static const uint8_t bayer4x4[4][4] = {
+        {  0,  8,  2, 10 },
+        { 12,  4, 14,  6 },
+        {  3, 11,  1,  9 },
+        { 15,  7, 13,  5 }
     };
 
     const uint8_t WATERFALL_START_Y = 41;  // Professional positioning
@@ -1500,13 +1487,12 @@ static void DrawWaterfall(void)
             // Apply fading
             uint8_t level = (uint8_t)(interp * fade);
             if (level > 15) level = 15;
-            uint8_t pattern = ditherPatterns[level];
 
-            // Intelligent pixel plotting with pattern dithering
-            if ((y_offset & 1) == 0)
-                PutPixel(x, y_pos, (pattern >> 4) & 1);
-            else
-                PutPixel(x, y_pos, (pattern >> 0) & 1);
+            // 4x4 Bayer ordered dithering
+            uint8_t bx = x & 0x3;
+            uint8_t by = y_pos & 0x3;
+            uint8_t threshold = bayer4x4[by][bx];
+            PutPixel(x, y_pos, (level > threshold) ? 1 : 0);
         }
     }
 }

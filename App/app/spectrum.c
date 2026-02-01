@@ -793,6 +793,7 @@ static void ResetScanStats()
 {
     scanInfo.rssi = 0;
     scanInfo.rssiMax = 0;
+    scanInfo.rssiMin = 0xFFFF; // Reset min for noise floor tracking
     scanInfo.iPeak = 0;
     scanInfo.fPeak = 0;
 }
@@ -913,30 +914,35 @@ static void AutoTriggerLevel()
     }
     else
 {
-    // 1. Calculate the ideal target (Peak + 4dB)
+    // 1. Determine Target: Peak Noise + 8 units (4dB)
     uint16_t targetTrigger = scanInfo.rssiMax + 8; 
 
-    // 2. Enforce the Absolute Floor (Minimum margin above noise)
-    // Even if the signal is weak, don't let the squelch drop into the "mud"
-    const uint16_t MIN_THRESHOLD = scanInfo.rssiMax + 6; // Absolute S1 floor (3dB)
-    
+    // 2. Enforce Absolute Sensitivity Floor (S1/Sugar 1 level)
+    const uint16_t MIN_THRESHOLD = scanInfo.rssiMax + 8; 
     if (targetTrigger < MIN_THRESHOLD)
         targetTrigger = MIN_THRESHOLD;
 
-    // 3. Smoothly move the actual setting toward the target
+    // 3. Movement Logic: Rising vs. Falling
     if (targetTrigger > settings.rssiTriggerLevel)
     {
-        // Tracking signal increases (Rising)
-        int16_t diff = (int16_t)targetTrigger - (int16_t)settings.rssiTriggerLevel;
-        int16_t step = (diff > 6) ? 3 : ((diff > 3) ? 2 : 1);
-        settings.rssiTriggerLevel += step;
+        // Signal is increasing: Step up quickly (3 units/scan)
+        int16_t diff = targetTrigger - settings.rssiTriggerLevel;
+        settings.rssiTriggerLevel += (diff > 6) ? 3 : 1;
+        
+        // Final safety snap
+        if (settings.rssiTriggerLevel > targetTrigger)
+            settings.rssiTriggerLevel = targetTrigger;
     }
-    else if (targetTrigger < settings.rssiTriggerLevel - 4)
+    else if (targetTrigger < settings.rssiTriggerLevel)
     {
-        // Tracking signal decreases (Falling)
-        int16_t diff = (int16_t)settings.rssiTriggerLevel - (int16_t)targetTrigger;
-        int16_t step = (diff > 6) ? 3 : ((diff > 3) ? 2 : 1);
-        settings.rssiTriggerLevel -= step;
+        // Signal is decreasing: Step down (return to baseline)
+        // We removed the "- 4" so it walks all the way down to targetTrigger
+        int16_t diff = settings.rssiTriggerLevel - targetTrigger;
+        settings.rssiTriggerLevel -= (diff > 6) ? 3 : 1;
+
+        // Final safety snap to ensure we reach the exact floor
+        if (settings.rssiTriggerLevel < targetTrigger)
+            settings.rssiTriggerLevel = targetTrigger;
     }
 }
 }

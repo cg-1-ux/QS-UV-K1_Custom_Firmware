@@ -1,52 +1,6 @@
-#include "frequencies.h"
-#include "driver/bk4819.h"
-
-// Utility: Set LED color based on frequency and TX/RX state
-// hasSignal: true if signal is present (RSSI above threshold), false if no signal
-static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
-{
-    // If no signal, turn both LEDs OFF and return
-    if (!hasSignal) {
-        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
-        BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
-        return;
-    }
-
-    // Always turn both LEDs OFF first to avoid stuck states
-    BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
-    BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
-
-    FREQUENCY_Band_t band = FREQUENCY_GetBand(freq);
-    if (isTx) {
-        // TX: Always RED only
-        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
-    } else {
-        // RX: VHF = GREEN only, UHF = RED+GREEN, else RED only
-        if (band == BAND3_137MHz || band == BAND4_174MHz) {
-            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
-        } else if (band == BAND6_400MHz) {
-            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
-            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
-        } else {
-            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
-        }
-    }
-}
-
-#define PEAK_HOLD_DECAY 2
-
-
-#include "ui/main.h"
-
-// ...existing code...
-
-// --- Peak Hold Buffer ---
-// Place after SPECTRUM_MAX_STEPS and other buffer definitions
-
-
 /**
  * @file spectrum.c
- * @brief Professional-grade Spectrum Analyzer for QS-UV-K1 Radio
+ * @brief Professional-grade Spectrum Analyzer + Waterfall (4x4 Bayer Implementation) for QS-UV-K1 Radio
  *
  * This module implements a comprehensive spectrum analyzer with professional-grade
  * signal visualization comparable to commercial radios like Yaesu. It provides
@@ -99,6 +53,45 @@ static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
  *     limitations under the License.
  */
 
+#include "frequencies.h"
+#include "driver/bk4819.h"
+
+// Utility: Set LED color based on frequency and TX/RX state
+// hasSignal: true if signal is present (RSSI above threshold), false if no signal
+static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
+{
+    // If no signal, turn both LEDs OFF and return
+    if (!hasSignal) {
+        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
+        BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
+        return;
+    }
+
+    // Always turn both LEDs OFF first to avoid stuck states
+    BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, false);
+    BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, false);
+
+    FREQUENCY_Band_t band = FREQUENCY_GetBand(freq);
+    if (isTx) {
+        // TX: Always RED only
+        BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
+    } else {
+        // RX: VHF = GREEN only, UHF = RED+GREEN, else RED only
+        if (band == BAND3_137MHz || band == BAND4_174MHz) {
+            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
+        } else if (band == BAND6_400MHz) {
+            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
+            BK4819_ToggleGpioOut(BK4819_GPIO6_PIN2_GREEN, true);
+        } else {
+            BK4819_ToggleGpioOut(BK4819_GPIO5_PIN1_RED, true);
+        }
+    }
+}
+
+#define PEAK_HOLD_DECAY 2
+
+
+#include "ui/main.h"
 #include <string.h>
 
 #include "am_fix.h"
@@ -919,40 +912,33 @@ static void AutoTriggerLevel()
         settings.rssiTriggerLevel = clamp(initialTrigger, 0, RSSI_MAX_VALUE);
     }
     else
+{
+    // 1. Calculate the ideal target (Peak + 4dB)
+    uint16_t targetTrigger = scanInfo.rssiMax + 8; 
+
+    // 2. Enforce the Absolute Floor (Minimum margin above noise)
+    // Even if the signal is weak, don't let the squelch drop into the "mud"
+    const uint16_t MIN_THRESHOLD = scanInfo.rssiMax + 6; // Absolute S1 floor (3dB)
+    
+    if (targetTrigger < MIN_THRESHOLD)
+        targetTrigger = MIN_THRESHOLD;
+
+    // 3. Smoothly move the actual setting toward the target
+    if (targetTrigger > settings.rssiTriggerLevel)
     {
-        // Professional scan-based auto-adjust:
-        // Update trigger to maintain peak + 8dB relationship
-        // Aggressive tracking for immediate response to band changes
-        uint16_t newTrigger = clamp(scanInfo.rssiMax + 8, 0, RSSI_MAX_VALUE);
-        
-        // Enforce minimum threshold to prevent squelch false positives on idle bands
-        // This prevents the trigger from being set too low by background noise
-        const uint16_t MIN_TRIGGER = scanInfo.rssiMax + 15;  // Minimum safety margin (10dB)
-        if (newTrigger < MIN_TRIGGER)
-            newTrigger = MIN_TRIGGER;
-        
-        // Apply faster adjustment for responsive trigger tracking
-        // Signal changes are tracked within 2-3 scans for immediate visual feedback
-        if (newTrigger > settings.rssiTriggerLevel)
-        {
-            // Signal getting stronger: increase trigger quickly (±3 per scan)
-            int16_t diff = (int16_t)newTrigger - (int16_t)settings.rssiTriggerLevel;
-            int16_t step = (diff > 6) ? 3 : ((diff > 3) ? 2 : 1);
-            settings.rssiTriggerLevel += step;
-            if (settings.rssiTriggerLevel > newTrigger)
-                settings.rssiTriggerLevel = newTrigger;
-        }
-        else if (newTrigger < settings.rssiTriggerLevel - 4)
-        {
-            // Signal getting weaker: decrease trigger quickly (±3 per scan)
-            int16_t diff = (int16_t)settings.rssiTriggerLevel - (int16_t)newTrigger;
-            int16_t step = (diff > 6) ? 3 : ((diff > 3) ? 2 : 1);
-            settings.rssiTriggerLevel -= step;
-            if (settings.rssiTriggerLevel < newTrigger)
-                settings.rssiTriggerLevel = newTrigger;
-        }
-        // Otherwise: hold current trigger (prevents jumping on small fluctuations)
+        // Tracking signal increases (Rising)
+        int16_t diff = (int16_t)targetTrigger - (int16_t)settings.rssiTriggerLevel;
+        int16_t step = (diff > 6) ? 3 : ((diff > 3) ? 2 : 1);
+        settings.rssiTriggerLevel += step;
     }
+    else if (targetTrigger < settings.rssiTriggerLevel - 4)
+    {
+        // Tracking signal decreases (Falling)
+        int16_t diff = (int16_t)settings.rssiTriggerLevel - (int16_t)targetTrigger;
+        int16_t step = (diff > 6) ? 3 : ((diff > 3) ? 2 : 1);
+        settings.rssiTriggerLevel -= step;
+    }
+}
 }
 
 /**

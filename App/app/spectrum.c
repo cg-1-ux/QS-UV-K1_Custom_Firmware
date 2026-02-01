@@ -56,6 +56,11 @@
 #include "frequencies.h"
 #include "driver/bk4819.h"
 
+static const uint32_t ScanStepTable[] = {
+    1, 10, 50, 100, 250, 500, 625, 833, 1000, 1250, 1500, 2000, 2500, 5000, 10000
+};
+#define SCAN_STEP_COUNT (sizeof(ScanStepTable) / sizeof(ScanStepTable[0]))
+
 // Utility: Set LED color based on frequency and TX/RX state
 // hasSignal: true if signal is present (RSSI above threshold), false if no signal
 static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
@@ -448,16 +453,6 @@ static void SetRegMenuValue(uint8_t st, bool add)
  * @param nx X coordinate
  * @param fill true to set pixels, false to clear
  */
-static void DrawVLine(int sy, int ey, int nx, bool fill)
-{
-    for (int i = sy; i <= ey; i++)
-    {
-        if (i < 56 && nx < 128)
-        {
-            PutPixel(nx, i, fill);
-        }
-    }
-}
 
 #ifndef ENABLE_FEAT_N7SIX
 static void GUI_DisplaySmallest(const char *pString, uint8_t x, uint8_t y,
@@ -642,31 +637,21 @@ uint16_t GetScanStep() { return scanStepValues[settings.scanStepIndex]; }
 #define SPECTRUM_MAX_SAFE_STEPS 256U
 uint16_t GetStepsCount()
 {
-#ifdef ENABLE_SCAN_RANGES
-    if (gScanRangeStart)
-    {
-        uint32_t range = gScanRangeStop - gScanRangeStart;
-        uint16_t step = GetScanStep();
-        uint16_t steps = (range / step) + 1;  // +1 to include up limit
-        if (steps > SPECTRUM_MAX_SAFE_STEPS) {
-            // Optionally: set a flag to display a warning to the user
-            steps = SPECTRUM_MAX_SAFE_STEPS;
-        }
-        return steps;
+    // Deep Review: We use a simple mask to ensure the index is always 0-3
+    // This prevents KEY_4 from ever "doing nothing"
+    uint8_t index = settings.stepsCount & 0x03; 
+
+    switch (index) {
+        case 0: return 128;
+        case 1: return 64;
+        case 2: return 32;
+        case 3: return 16;
+        default: return 128;
     }
-#endif
-    return 128 >> settings.stepsCount;
 }
 
 #ifdef ENABLE_SCAN_RANGES
-static uint16_t GetStepsCountDisplay()
-{
-    if (gScanRangeStart)
-    {
-        return (gScanRangeStop - gScanRangeStart) / GetScanStep();
-    }
-    return GetStepsCount();
-}
+
 #endif
 
 uint32_t GetBW() { return GetStepsCount() * GetScanStep(); }
@@ -821,16 +806,17 @@ static void ResetBlacklist()
 #endif
 }
 
-static void RelaunchScan()
+void RelaunchScan()
 {
-    InitScan();
-    ResetPeak();
-    ToggleRX(false);
-#ifdef SPECTRUM_AUTOMATIC_SQUELCH
-    settings.rssiTriggerLevel = RSSI_MAX_VALUE;
-#endif
-    preventKeypress = true;
-    scanInfo.rssiMin = RSSI_MAX_VALUE;
+    // The hardware step is the Total Width (Span) divided by the Number of Points (Z)
+    // This allows "Z" to change detail without "S" interfering.
+    scanInfo.scanStep = settings.frequencyChangeStep / GetStepsCount();
+    
+    scanInfo.f = currentFreq - (settings.frequencyChangeStep / 2);
+    scanInfo.i = 0;
+    
+    memset(rssiHistory, 0, sizeof(rssiHistory));
+    newScanStart = true;
 }
 
 /**
@@ -1075,70 +1061,58 @@ static void UpdateDBMax(bool inc)
     SYSTEM_DelayMs(20);
 }
 
+// THIS HANDLES KEY 1 & 7 (Resolution/Step Table)
+// This will now use scanStepIndex to move through your 0.01k to 100k list
 static void UpdateScanStep(bool inc)
 {
-    if (inc)
-    {
-        settings.scanStepIndex = settings.scanStepIndex != S_STEP_100_0kHz ? settings.scanStepIndex + 1 : 0;
-    }
-    else
-    {
-        settings.scanStepIndex = settings.scanStepIndex != 0 ? settings.scanStepIndex - 1 : S_STEP_100_0kHz;
+    // ONLY move the pointer in the table
+    if (inc) {
+        if (settings.scanStepIndex < SCAN_STEP_COUNT - 1) settings.scanStepIndex++;
+    } else {
+        if (settings.scanStepIndex > 0) settings.scanStepIndex--;
     }
 
-    settings.frequencyChangeStep = GetBW() >> 1;
-    RelaunchScan();
-    ResetBlacklist();
-    redrawScreen = true;
+    // DO NOT recalculate stepsCount or frequencyChangeStep here!
+    // This keeps "S" from breaking "Z".
+    
+    redrawScreen = true; 
 }
 
 static void UpdateCurrentFreq(bool inc)
 {
-    if (inc && currentFreq < F_MAX)
-    {
-        currentFreq += settings.frequencyChangeStep;
-    }
-    else if (!inc && currentFreq > F_MIN)
-    {
-        currentFreq -= settings.frequencyChangeStep;
-    }
+    // Adjust center frequency by the current Step selection (KEY 1/7)
+    uint32_t step = ScanStepTable[settings.scanStepIndex];
+    
+    if (inc)
+        currentFreq += step;
     else
-    {
-        return;
-    }
+        currentFreq -= step;
+
     RelaunchScan();
-    ResetBlacklist();
     redrawScreen = true;
 }
 
 static void UpdateCurrentFreqStill(bool inc)
 {
-    uint8_t offset = modulationTypeTuneSteps[settings.modulationType];
-    uint32_t f = fMeasure;
-    if (inc && f < F_MAX)
-    {
-        f += offset;
-    }
-    else if (!inc && f > F_MIN)
-    {
-        f -= offset;
-    }
-    SetF(f);
-    redrawScreen = true;
+    // Continuous scroll logic
+    UpdateCurrentFreq(inc);
+    SYSTEM_DelayMs(50); // Small delay to control scroll speed
 }
 
+// THIS HANDLES KEY 2 & 8 (Span/Zoom)
+// This uses the 200kHz jump you requested earlier
 static void UpdateFreqChangeStep(bool inc)
 {
-    uint16_t diff = GetScanStep() * 4;
-    if (inc && settings.frequencyChangeStep < 200000)
-    {
-        settings.frequencyChangeStep += diff;
+    const uint32_t JUMP = 20000; // 200.00k in 10Hz units
+
+    if (inc) {
+        settings.frequencyChangeStep += JUMP;
+    } else {
+        if (settings.frequencyChangeStep > JUMP)
+            settings.frequencyChangeStep -= JUMP;
     }
-    else if (!inc && settings.frequencyChangeStep > 10000)
-    {
-        settings.frequencyChangeStep -= diff;
-    }
-    SYSTEM_DelayMs(100);
+
+    RelaunchScan();
     redrawScreen = true;
 }
 
@@ -1186,18 +1160,15 @@ static void ToggleBacklight()
 
 static void ToggleStepsCount()
 {
-    if (settings.stepsCount == STEPS_128)
-    {
-        settings.stepsCount = STEPS_16;
-    }
-    else
-    {
-        settings.stepsCount--;
-    }
-    settings.frequencyChangeStep = GetBW() >> 1;
+    // Cycle the index (0,1,2,3)
+    settings.stepsCount = (settings.stepsCount + 1) % 4;
+
+    // REMOVED: settings.frequencyChangeStep = GetStepsCount() * 100; 
+    // This allows the Span (KEY 2/8) to stay exactly where the user set it.
+
     RelaunchScan();
-    ResetBlacklist();
-    redrawScreen = true;
+    ResetPeak();
+    redrawScreen = true; 
 }
 
 static void ResetFreqInput()
@@ -1642,48 +1613,43 @@ static void DrawF(uint32_t f)
 
 static void DrawNums()
 {
-    // Frequency numbers moved from Y=38 to Y=34 (4 pixels up)
     if (currentState == SPECTRUM)
     {
-#ifdef ENABLE_SCAN_RANGES
-        if (gScanRangeStart)
-        {
-            sprintf(String, "%ux", GetStepsCountDisplay());
-        }
-        else
-#endif
-        {
-            sprintf(String, "%ux", GetStepsCount());
-        }
-        // Moved Y from 1 to 1 (keeping top info at top)
+        // Display Z: Now strictly returns 16, 32, 64, or 128 from the new helper
+        sprintf(String, "Z:%ux", GetStepsCount()); 
         GUI_DisplaySmallest(String, 0, 1, false, true);
         
-        sprintf(String, "%u.%02uk", GetScanStep() / 100, GetScanStep() % 100);
-                GUI_DisplaySmallest(String, 0, 7, false, true);
+        // Display S: Strictly from the Table based on KEY 1/7
+        uint32_t manualStep = ScanStepTable[settings.scanStepIndex];
+        sprintf(String, "S:%u.%02ukHz", manualStep / 100, manualStep % 100);
+        GUI_DisplaySmallest(String, 0, 7, false, true);
     }
 
     if (IsCenterMode())
     {
-        sprintf(String, "%u.%05u \x7F%u.%02uk", currentFreq / 100000,
-                currentFreq % 100000, settings.frequencyChangeStep / 100,
+        // Center Frequency + SPAN (KEY 2/8)
+        sprintf(String, "%u.%05u \x7F%u.%02ukHz", 
+                currentFreq / 100000,
+                currentFreq % 100000, 
+                settings.frequencyChangeStep / 100, // This is now JUST for Span
                 settings.frequencyChangeStep % 100);
         
-        // MOVED: Y coordinate 38 -> 34
         GUI_DisplaySmallest(String, 36, 34, false, true);
     }
     else
     {
+        // Start Frequency
         sprintf(String, "%u.%05u", GetFStart() / 100000, GetFStart() % 100000);
-        // MOVED: Y coordinate 38 -> 34
         GUI_DisplaySmallest(String, 0, 34, false, true);
 
-        sprintf(String, "\x7F%u.%02uk", settings.frequencyChangeStep / 100,
+        // 3. THE ZOOM/SPAN INDICATOR (KEY 2/8) - Bottom Center
+        sprintf(String, "\x7F%u.%02uk", 
+                settings.frequencyChangeStep / 100, 
                 settings.frequencyChangeStep % 100);
-        // MOVED: Y coordinate 38 -> 34
         GUI_DisplaySmallest(String, 48, 34, false, true);
 
+        // Stop Frequency
         sprintf(String, "%u.%05u", GetFEnd() / 100000, GetFEnd() % 100000);
-        // MOVED: Y coordinate 38 -> 34
         GUI_DisplaySmallest(String, 93, 34, false, true);
     }
 }
@@ -1702,21 +1668,30 @@ static void DrawRssiTriggerLevel()
 // --- TICK & ARROW (Moved 4 Pixels Down) ---
 static void DrawTicks()
 {
-    uint32_t f = GetFStart();
-    uint32_t span = GetFEnd() - GetFStart();
+    uint32_t fStart = GetFStart(); // We use fStart as the base
+    uint32_t span = GetFEnd() - fStart;
     uint32_t step = span / 128;
+    if (step == 0) step = 1;
 
-    for (uint8_t i = 0; i < 128; i += (1 << settings.stepsCount))
+    uint8_t spacing = 128 / GetStepsCount(); 
+
+    for (uint8_t i = 0; i < 128; i++) 
     {
-        f = GetFStart() + span * i / 128;
-        
-        // Bitmask shifted to lower part of byte to move ticks down
-        uint8_t barValue = 0b00010000; 
-        if ((f % 10000) < step)  barValue |= 0b00100000;
-        if ((f % 50000) < step)  barValue |= 0b01000000;
-        if ((f % 100000) < step) barValue |= 0b10000000;
+        // FIX: Added 'uint32_t' here to define the variable
+        uint32_t f = fStart + (uint64_t)span * i / 128;
 
-        gFrameBuffer[3][i] |= barValue;
+        bool isMajorTick = ((f % 50000) < step || (f % 100000) < step);
+        bool isSpacingPixel = (i % spacing == 0);
+
+        if (isSpacingPixel || isMajorTick)
+        {
+            uint8_t barValue = 0b00010000; 
+            if ((f % 10000) < step)  barValue |= 0b00100000;
+            if ((f % 50000) < step)  barValue |= 0b01000000;
+            if ((f % 100000) < step) barValue |= 0b10000000;
+
+            gFrameBuffer[3][i] |= barValue;
+        }
     }
 
     if (IsCenterMode())
@@ -1814,10 +1789,7 @@ static void OnKeyDown(uint8_t key)
         ToggleListeningBW();
         break;
     case KEY_4:
-#ifdef ENABLE_SCAN_RANGES
-        if (!gScanRangeStart)
-#endif
-            ToggleStepsCount();
+        ToggleStepsCount();
         break;
     case KEY_SIDE2:
         ToggleBacklight();

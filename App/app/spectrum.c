@@ -54,15 +54,19 @@
  */
 
 #include "frequencies.h"
-#include "driver/bk4819.h"
-
-#include "functions.h"
 #include "ui/ui.h"
-#include "driver/bk4819.h"
 #include "ui/status.h"
 #include "ui/battery.h"
 #include "helper/battery.h"
 #include "board.h"
+
+#include <stdbool.h>  // <--- This MUST be first to fix the 'unknown type name bool' error
+#include <stdint.h>
+#include "driver/bk4819.h"
+#include "functions.h"
+
+// Forward declaration must be ABOVE Tick() to fix the "static follows non-static" error
+static void PushWaterfallLine(void);
 
 extern uint16_t gBatteryVoltage;
 
@@ -114,11 +118,19 @@ static void SetBandLed(uint32_t freq, bool isTx, bool hasSignal)
 #include "audio.h"
 #include "misc.h"
 
+#include "audio.h"
+#include "radio.h"
+
 static void DrawF(uint32_t f);
 static void DrawStatus(void);
 static void DrawSpectrumEnhanced(void);
 static void SmoothRssiHistory(const uint16_t *input, uint16_t *output, uint8_t count);
 static void DrawSpectrumCurve(const uint16_t *smoothed, uint8_t bars);
+
+// Remove your manual 'extern void BK4819_WriteRegister...' line
+// And use the correct type from the header:
+#include "driver/bk4819.h" 
+
 uint8_t Rssi2Y(uint16_t rssi);
 
 #ifdef ENABLE_SCAN_RANGES
@@ -156,7 +168,7 @@ uint8_t Rssi2Y(uint16_t rssi);
 #define SPECTRUM_MAX_STEPS          128U
 
 /** @brief Number of waterfall history lines */
-#define WATERFALL_HISTORY_DEPTH     16U
+#define WATERFALL_HISTORY_DEPTH     12U
 
 /** @brief Maximum frequency input length */
 #define FREQ_INPUT_MAX_LENGTH       10U
@@ -1117,6 +1129,8 @@ static void DrawSpectrumEnhanced(void)
     }
 }
 
+
+
 static void DrawWaterfall(void)
 {
     static const uint8_t bayer4x4[4][4] = {
@@ -1560,20 +1574,23 @@ static void RenderStatus()
  */
 static void RenderSpectrum(void)
 {
-    // Layer 1: Background/Scale - Draw frequency axis and markers
     DrawTicks();
     DrawArrow(128u * peak.i / GetStepsCount());
 
-    // Layer 2: Data - Draw spectrum bars with enhanced rendering
-    DrawSpectrumEnhanced();  // Professional spectrum drawing
+    DrawSpectrumEnhanced(); 
     DrawRssiTriggerLevel();
 
-    // Layer 3: Text - Draw frequency and other textual information
+    // --- SUGAR 1 SQUELCH LOGIC ---
+    if (peak.rssi > settings.rssiTriggerLevel) {
+        // Register 0x30 is the main audio gate for the BK chip
+        BK4819_WriteRegister(BK4819_REG_30, 0x0000); //Former BK4829_WriteRegister(0x30, 0x0000); 
+    } else {
+        BK4829_WriteRegister(0x30, 0xFFFF);
+    }
+
     DrawF(peak.f);
     DrawNums();
-
-    // Layer 4: Waterfall - Draw signal history (renders last for layering)
-    DrawWaterfall();  // Professional 16-level waterfall display
+    DrawWaterfall(); 
 }
 
 static void RenderStill()
@@ -1947,7 +1964,29 @@ static void Tick()
     }
 #endif
 
+    // Handle user input only once per tick
+    if (!preventKeypress) HandleUserInput();
+
+    // --- SECTION: END OF SCAN PROCESSING ---
+    if (newScanStart)
+    {
+        // 1. Snapshot the whole scan into the waterfall
+        PushWaterfallLine();
+
+        // 2. Sugar 1 Squelch (Hardware Gate)
+        // Switch to BK4819 prefix so the linker can find the function
+        if (peak.rssi > settings.rssiTriggerLevel) {
+            BK4819_WriteRegister(BK4819_REG_30, 0x0000); // Open Audio Path
+        } else {
+            BK4819_WriteRegister(BK4819_REG_30, 0xFFFF); // Close Audio Path
+        }
+
+        InitScan();
+        newScanStart = false;
+    }
+
 #ifdef ENABLE_SCAN_RANGES
+    // Periodic peak check for wide spans
     if (gNextTimeslice_500ms)
     {
         gNextTimeslice_500ms = false;
@@ -1966,13 +2005,7 @@ static void Tick()
     }
 #endif
 
-    if (!preventKeypress) HandleUserInput();
-    if (newScanStart)
-    {
-        InitScan();
-        newScanStart = false;
-    }
-
+    // --- SECTION: STATE MACHINE ---
     if (isListening && currentState != FREQ_INPUT)
     {
         UpdateListening();
@@ -1983,6 +2016,7 @@ static void Tick()
         else if (currentState == STILL) UpdateStill();
     }
 
+    // --- SECTION: UI REFRESH ---
     if (redrawStatus || ++statuslineUpdateTimer > 4096)
     {
         RenderStatus();
@@ -2099,5 +2133,21 @@ void APP_RunSpectrum(void)
         } else {
             preventKeypressTimeout = 0;
         }
+    }
+}
+static void PushWaterfallLine(void)
+{
+    // Cycle the circular buffer
+    waterfallIndex = (waterfallIndex + 1) % WATERFALL_HISTORY_DEPTH;
+
+    uint16_t steps = GetStepsCount();
+    for (uint16_t i = 0; i < steps; i++)
+    {
+        // Map RSSI to 0-15 level
+        uint8_t level = (rssiHistory[i] > settings.dbMin) ? (rssiHistory[i] - settings.dbMin) : 0;
+        level /= 4; 
+        if (level > 15) level = 15;
+
+        waterfallHistory[i][waterfallIndex] = level;
     }
 }
